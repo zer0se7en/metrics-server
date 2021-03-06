@@ -15,7 +15,6 @@
 - [How is resource utilization calculated?](#how-is-resource-utilization-calculated)
 - [How to autoscale Metrics Server?](#how-to-autoscale-metrics-server)
 - [Can I get other metrics beside CPU/Memory using Metrics Server?](#can-i-get-other-metrics-beside-cpumemory-using-metrics-server)
-- [What requests and limits should I set for metrics server?](#what-requests-and-limits-should-i-set-for-metrics-server)
 - [How large can clusters be?](#how-large-can-clusters-be)
 - [How often metrics are scraped?](#how-often-metrics-are-scraped)
 <!-- /toc -->
@@ -85,23 +84,13 @@ Metrics server scales linearly vertically according to the number of nodes and p
 
 No, metrics server was designed to provide metrics used for autoscaling.
 
-#### What requests and limits should I set for metrics server?
-
-Metrics server scales linearly according to the number of nodes and pods in cluster. For pod density of 30 pods per node:
-
-* CPU: 40mCore base + 0.5 mCore per node
-* Memory: 40MiB base + 4 MiB per node
-
-For higher pod density you should be able to scale resources proportionally.
-We are not recommending setting CPU limits as metrics server needs more compute to generate certificates at bootstrap.
-
 #### How large can clusters be?
 
 Metrics Server was tested to run within clusters up to 5000 nodes with an average pod density of 30 pods per node.
 
 #### How often metrics are scraped?
 
-Default 60 seconds, can be changed using `metrics-resolution` flag. We are not recommending setting values below 15s, as this is the resolution of metrics calculated within Kubelet.
+Default 60 seconds, can be changed using `metric-resolution` flag. We are not recommending setting values below 15s, as this is the resolution of metrics calculated within Kubelet.
 
 [Meaning of CPU]: https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/#meaning-of-cpu
 [Meaning of memory]: https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/#meaning-of-memory

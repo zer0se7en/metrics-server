@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package scraper
+package summary
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,6 +30,8 @@ type Summary struct {
 type NodeStats struct {
 	// Reference to the measured Node.
 	NodeName string `json:"nodeName"`
+	// Start time of system
+	StartTime metav1.Time `json:"startTime"`
 	// Stats pertaining to CPU resources.
 	// +optional
 	CPU *CPUStats `json:"cpu,omitempty"`
@@ -52,6 +54,8 @@ type PodStats struct {
 type ContainerStats struct {
 	// Reference to the measured container.
 	Name string `json:"name"`
+	// Start time of container
+	StartTime metav1.Time `json:"startTime"`
 	// Stats pertaining to CPU resources.
 	// +optional
 	CPU *CPUStats `json:"cpu,omitempty"`
@@ -70,10 +74,9 @@ type PodReference struct {
 type CPUStats struct {
 	// The time at which these stats were updated.
 	Time metav1.Time `json:"time"`
-	// Total CPU usage (sum of all cores) averaged over the sample window.
-	// The "core" unit can be interpreted as CPU core-nanoseconds per second.
+	// Cumulative CPU usage (sum of all cores) since object creation.
 	// +optional
-	UsageNanoCores *uint64 `json:"usageNanoCores,omitempty"`
+	UsageCoreNanoSeconds *uint64 `json:"usageCoreNanoSeconds,omitempty"`
 }
 
 // MemoryStats contains data about memory usage.

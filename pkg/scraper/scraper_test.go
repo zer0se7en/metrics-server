@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/metrics-server/pkg/scraper/client"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
@@ -39,14 +41,6 @@ func TestScraper(t *testing.T) {
 	RunSpecs(t, "Scraper Suite")
 }
 
-func nodeStats(node *corev1.Node, cpu, memory int, scrapeTime time.Time) NodeStats {
-	return NodeStats{
-		NodeName: node.Name,
-		CPU:      cpuStats(100, scrapeTime.Add(100*time.Millisecond)),
-		Memory:   memStats(200, scrapeTime.Add(200*time.Millisecond)),
-	}
-}
-
 var _ = Describe("Scraper", func() {
 	var (
 		scrapeTime = time.Now()
@@ -58,28 +52,32 @@ var _ = Describe("Scraper", func() {
 		node4      = makeNode("node4", "node4.somedomain", "10.0.1.5", true)
 	)
 	BeforeEach(func() {
-		summary := &Summary{
-			Node: nodeStats(node1, 100, 200, scrapeTime),
-			Pods: []PodStats{
-				podStats("ns1", "pod1",
-					containerStats("container1", 300, 400, scrapeTime.Add(10*time.Millisecond)),
-					containerStats("container2", 500, 600, scrapeTime.Add(20*time.Millisecond))),
-				podStats("ns1", "pod2",
-					containerStats("container1", 700, 800, scrapeTime.Add(30*time.Millisecond))),
-				podStats("ns2", "pod1",
-					containerStats("container1", 900, 1000, scrapeTime.Add(40*time.Millisecond))),
-				podStats("ns3", "pod1",
-					containerStats("container1", 1100, 1200, scrapeTime.Add(50*time.Millisecond))),
+		mb := &storage.MetricsBatch{
+			Nodes: []storage.NodeMetricsPoint{nodeMetrics(node1, 100, 200, scrapeTime)},
+			Pods: []storage.PodMetricsPoint{
+				{Namespace: "ns1", Name: "pod1", Containers: []storage.ContainerMetricsPoint{
+					{Name: "container1", MetricsPoint: metricPoint(300, 400, scrapeTime.Add(10*time.Millisecond))},
+					{Name: "container2", MetricsPoint: metricPoint(500, 600, scrapeTime.Add(20*time.Millisecond))},
+				}},
+				{Namespace: "ns1", Name: "pod2", Containers: []storage.ContainerMetricsPoint{
+					{Name: "container1", MetricsPoint: metricPoint(700, 800, scrapeTime.Add(30*time.Millisecond))},
+				}},
+				{Namespace: "ns2", Name: "pod1", Containers: []storage.ContainerMetricsPoint{
+					{Name: "container1", MetricsPoint: metricPoint(900, 1000, scrapeTime.Add(40*time.Millisecond))},
+				}},
+				{Namespace: "ns3", Name: "pod1", Containers: []storage.ContainerMetricsPoint{
+					{Name: "container1", MetricsPoint: metricPoint(1100, 1200, scrapeTime.Add(50*time.Millisecond))},
+				}},
 			},
 		}
 		nodeLister = fakeNodeLister{nodes: []*corev1.Node{node1, node2, node3, node4}}
 		client = fakeKubeletClient{
 			delay: map[*corev1.Node]time.Duration{},
-			metrics: map[*corev1.Node]*Summary{
-				node1: summary,
-				node2: {Node: nodeStats(node2, 100, 200, scrapeTime)},
-				node3: {Node: nodeStats(node3, 100, 200, scrapeTime)},
-				node4: {Node: nodeStats(node4, 100, 200, scrapeTime)},
+			metrics: map[*corev1.Node]*storage.MetricsBatch{
+				node1: mb,
+				node2: {Nodes: []storage.NodeMetricsPoint{nodeMetrics(node2, 100, 200, scrapeTime)}},
+				node3: {Nodes: []storage.NodeMetricsPoint{nodeMetrics(node3, 100, 200, scrapeTime)}},
+				node4: {Nodes: []storage.NodeMetricsPoint{nodeMetrics(node4, 100, 200, scrapeTime)}},
 			},
 		}
 	})
@@ -93,9 +91,8 @@ var _ = Describe("Scraper", func() {
 			start := time.Now()
 			scraper := NewScraper(&nodeLister, &client, 3*time.Second)
 			timeoutCtx, doneWithWork := context.WithTimeout(context.Background(), 4*time.Second)
-			dataBatch, errs := scraper.Scrape(timeoutCtx)
+			dataBatch := scraper.Scrape(timeoutCtx)
 			doneWithWork()
-			Expect(errs).NotTo(HaveOccurred())
 
 			By("ensuring that the full time took at most 3 seconds")
 			Expect(time.Since(start)).To(BeNumerically("<=", 3*time.Second))
@@ -116,14 +113,12 @@ var _ = Describe("Scraper", func() {
 			By("running the source scraper with a scrape timeout of 3 seconds")
 			start := time.Now()
 			scraper := NewScraper(&nodeLister, &client, 3*time.Second)
-			dataBatch, errs := scraper.Scrape(context.Background())
-			Expect(errs).To(HaveOccurred())
+			dataBatch := scraper.Scrape(context.Background())
 
 			By("ensuring that scraping took around 3 seconds")
 			Expect(time.Since(start)).To(BeNumerically("~", 3*time.Second, timeDrift))
 
 			By("ensuring that an error and partial results (data from source 2) were returned")
-			Expect(errs).To(HaveOccurred())
 			Expect(nodeNames(dataBatch.Nodes)).To(ConsistOf([]string{"node-no-host", "node3", "node4"}))
 			Expect(podNames(dataBatch.Pods)).To(BeEmpty())
 		})
@@ -136,13 +131,11 @@ var _ = Describe("Scraper", func() {
 			start := time.Now()
 			scraper := NewScraper(&nodeLister, &client, 5*time.Second)
 			timeoutCtx, doneWithWork := context.WithTimeout(context.Background(), 1*time.Second)
-			dataBatch, errs := scraper.Scrape(timeoutCtx)
+			dataBatch := scraper.Scrape(timeoutCtx)
 			doneWithWork()
-			Expect(errs).To(HaveOccurred())
 
 			By("ensuring that it times out after 1 second with errors and no data")
 			Expect(time.Since(start)).To(BeNumerically("~", 1*time.Second, timeDrift))
-			Expect(errs).To(HaveOccurred())
 			Expect(dataBatch.Nodes).To(BeEmpty())
 		})
 	})
@@ -163,8 +156,7 @@ var _ = Describe("Scraper", func() {
 		nodes := fakeNodeLister{nodes: []*corev1.Node{node1}}
 
 		scraper := NewScraper(&nodes, &client, 3*time.Second)
-		_, errs := scraper.Scrape(context.Background())
-		Expect(errs).NotTo(HaveOccurred())
+		scraper.Scrape(context.Background())
 
 		err := testutil.CollectAndCompare(requestDuration, strings.NewReader(`
 		# HELP metrics_server_kubelet_request_duration_seconds [ALPHA] Duration of requests to Kubelet API in seconds
@@ -208,8 +200,7 @@ var _ = Describe("Scraper", func() {
 		scraper := NewScraper(&nodeLister, &client, 5*time.Second)
 
 		By("running the scraper")
-		dataBatch, errs := scraper.Scrape(context.Background())
-		Expect(errs).To(HaveOccurred())
+		dataBatch := scraper.Scrape(context.Background())
 
 		By("ensuring that all other node were scraped")
 		Expect(nodeNames(dataBatch.Nodes)).To(ConsistOf([]string{"node4", "node-no-host", "node3"}))
@@ -220,18 +211,38 @@ var _ = Describe("Scraper", func() {
 		scraper := NewScraper(&nodeLister, &client, 5*time.Second)
 
 		By("running the scraper")
-		_, err := scraper.Scrape(context.Background())
-		Expect(err).To(HaveOccurred())
+		scraper.Scrape(context.Background())
 	})
 })
 
+func nodeMetrics(node *corev1.Node, cpu, memory uint64, scrapeTime time.Time) storage.NodeMetricsPoint {
+	return storage.NodeMetricsPoint{
+		Name: node.Name,
+		MetricsPoint: storage.MetricsPoint{
+			CumulativeCpuUsed: cpu,
+			MemoryUsage:       memory,
+			Timestamp:         scrapeTime,
+		},
+	}
+}
+
+func metricPoint(cpu, memory uint64, time time.Time) storage.MetricsPoint {
+	return storage.MetricsPoint{
+		Timestamp:         time,
+		CumulativeCpuUsed: cpu,
+		MemoryUsage:       memory,
+	}
+}
+
 type fakeKubeletClient struct {
 	delay        map[*corev1.Node]time.Duration
-	metrics      map[*corev1.Node]*Summary
+	metrics      map[*corev1.Node]*storage.MetricsBatch
 	defaultDelay time.Duration
 }
 
-func (c *fakeKubeletClient) GetSummary(ctx context.Context, node *corev1.Node) (*Summary, error) {
+var _ client.KubeletMetricsInterface = (*fakeKubeletClient)(nil)
+
+func (c *fakeKubeletClient) GetMetrics(ctx context.Context, node *corev1.Node) (*storage.MetricsBatch, error) {
 	delay, ok := c.delay[node]
 	if !ok {
 		delay = c.defaultDelay

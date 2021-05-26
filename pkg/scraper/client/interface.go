@@ -12,22 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package storage
+package client
 
 import (
-	"time"
+	"context"
+
+	v1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/metrics-server/pkg/storage"
 )
 
-const (
-	MiByte     = 1024 * 1024
-	CoreSecond = 1000 * 1000 * 1000
-)
-
-func newMetricsPoint(st time.Time, ts time.Time, cpu, memory uint64) MetricsPoint {
-	return MetricsPoint{
-		StartTime:         st,
-		Timestamp:         ts,
-		CumulativeCpuUsed: cpu,
-		MemoryUsage:       memory,
-	}
+// KubeletMetricsInterface knows how to fetch metrics from the Kubelet
+type KubeletMetricsInterface interface {
+	// GetSummary fetches summary metrics from the given Kubelet
+	GetMetrics(ctx context.Context, node *v1.Node) (*storage.MetricsBatch, error)
 }

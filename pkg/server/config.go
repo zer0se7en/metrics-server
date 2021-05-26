@@ -18,10 +18,12 @@ import (
 	"net/http"
 	"time"
 
+	"sigs.k8s.io/metrics-server/pkg/scraper/client"
+	"sigs.k8s.io/metrics-server/pkg/scraper/client/summary"
+
 	corev1 "k8s.io/api/core/v1"
 	apimetrics "k8s.io/apiserver/pkg/endpoints/metrics"
 	genericapiserver "k8s.io/apiserver/pkg/server"
-	"k8s.io/apiserver/pkg/server/healthz"
 	"k8s.io/client-go/rest"
 	"k8s.io/component-base/metrics"
 	"k8s.io/component-base/metrics/legacyregistry"
@@ -36,7 +38,7 @@ import (
 type Config struct {
 	Apiserver        *genericapiserver.Config
 	Rest             *rest.Config
-	Kubelet          *scraper.KubeletClientConfig
+	Kubelet          *client.KubeletClientConfig
 	MetricResolution time.Duration
 	ScrapeTimeout    time.Duration
 }
@@ -51,7 +53,7 @@ func (c Config) Complete() (*server, error) {
 	if err != nil {
 		return nil, err
 	}
-	kubeletClient, err := c.Kubelet.Complete()
+	kubeletClient, err := summary.NewClient(*c.Kubelet)
 	if err != nil {
 		return nil, fmt.Errorf("unable to construct a client to connect to the kubelets: %v", err)
 	}
@@ -70,7 +72,7 @@ func (c Config) Complete() (*server, error) {
 	}
 	genericServer.Handler.NonGoRestfulMux.HandleFunc("/metrics", metricsHandler)
 
-	store := storage.NewStorage()
+	store := storage.NewStorage(c.MetricResolution)
 	if err := api.Install(store, &podMetadataLister{podInformer.Lister()}, nodes.Lister(), genericServer); err != nil {
 		return nil, err
 	}
@@ -83,11 +85,7 @@ func (c Config) Complete() (*server, error) {
 		scrape,
 		c.MetricResolution,
 	)
-	err = s.AddHealthChecks(healthz.NamedCheck("livez", s.CheckLiveness), healthz.NamedCheck("readyz", s.CheckReadiness))
-	if err != nil {
-		return nil, err
-	}
-	err = s.AddHealthChecks(MetadataInformerSyncHealthz(podInformerFactory))
+	err = s.RegisterProbes(podInformerFactory)
 	if err != nil {
 		return nil, err
 	}

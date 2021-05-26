@@ -16,13 +16,13 @@ package scraper
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"time"
 
+	"sigs.k8s.io/metrics-server/pkg/scraper/client"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	v1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/component-base/metrics"
 	"k8s.io/klog/v2"
@@ -82,7 +82,7 @@ func RegisterScraperMetrics(registrationFunc func(metrics.Registerable) error) e
 	return nil
 }
 
-func NewScraper(nodeLister v1listers.NodeLister, client KubeletInterface, scrapeTimeout time.Duration) *scraper {
+func NewScraper(nodeLister v1listers.NodeLister, client client.KubeletMetricsInterface, scrapeTimeout time.Duration) *scraper {
 	return &scraper{
 		nodeLister:    nodeLister,
 		kubeletClient: client,
@@ -92,7 +92,7 @@ func NewScraper(nodeLister v1listers.NodeLister, client KubeletInterface, scrape
 
 type scraper struct {
 	nodeLister    v1listers.NodeLister
-	kubeletClient KubeletInterface
+	kubeletClient client.KubeletMetricsInterface
 	scrapeTimeout time.Duration
 }
 
@@ -105,19 +105,16 @@ type NodeInfo struct {
 	ConnectAddress string
 }
 
-func (c *scraper) Scrape(baseCtx context.Context) (*storage.MetricsBatch, error) {
+func (c *scraper) Scrape(baseCtx context.Context) *storage.MetricsBatch {
 	nodes, err := c.nodeLister.List(labels.Everything())
-	var errs []error
 	if err != nil {
-		// save the error, and continue on in case of partial results
-		errs = append(errs, err)
+		// report the error and continue on in case of partial results
+		klog.ErrorS(err, "Failed to list nodes")
 	}
-	klog.V(1).Infof("Scraping metrics from %v nodes", len(nodes))
+	klog.V(1).InfoS("Scraping metrics from nodes", "nodeCount", len(nodes))
 
 	responseChannel := make(chan *storage.MetricsBatch, len(nodes))
-	errChannel := make(chan error, len(nodes))
 	defer close(responseChannel)
-	defer close(errChannel)
 
 	startTime := myClock.Now()
 
@@ -136,27 +133,19 @@ func (c *scraper) Scrape(baseCtx context.Context) (*storage.MetricsBatch, error)
 			// the overall timeout
 			ctx, cancelTimeout := context.WithTimeout(baseCtx, c.scrapeTimeout-sleepDuration)
 			defer cancelTimeout()
-
-			klog.V(2).Infof("Querying source: %s", node)
-			metrics, err := c.collectNode(ctx, node)
+			klog.V(2).InfoS("Scraping node", "node", klog.KObj(node))
+			m, err := c.collectNode(ctx, node)
 			if err != nil {
-				err = fmt.Errorf("unable to fully scrape metrics from node %s: %v", node.Name, err)
+				klog.ErrorS(err, "Failed to scrape node", "node", klog.KObj(node))
 			}
-			responseChannel <- metrics
-			errChannel <- err
+			responseChannel <- m
 		}(node)
 	}
 
 	res := &storage.MetricsBatch{}
 
 	for range nodes {
-		err := <-errChannel
 		srcBatch := <-responseChannel
-		if err != nil {
-			errs = append(errs, err)
-			// NB: partial node results are still worth saving, so
-			// don't skip storing results if we got an error
-		}
 		if srcBatch == nil {
 			continue
 		}
@@ -165,8 +154,8 @@ func (c *scraper) Scrape(baseCtx context.Context) (*storage.MetricsBatch, error)
 		res.Pods = append(res.Pods, srcBatch.Pods...)
 	}
 
-	klog.V(1).Infof("ScrapeMetrics: time: %s, nodes: %v, pods: %v", myClock.Since(startTime), len(res.Nodes), len(res.Pods))
-	return res, utilerrors.NewAggregate(errs)
+	klog.V(1).InfoS("Scrape finished", "duration", myClock.Since(startTime), "nodeCount", len(res.Nodes), "podCount", len(res.Pods))
+	return res
 }
 
 func (c *scraper) collectNode(ctx context.Context, node *corev1.Node) (*storage.MetricsBatch, error) {
@@ -175,14 +164,14 @@ func (c *scraper) collectNode(ctx context.Context, node *corev1.Node) (*storage.
 		requestDuration.WithLabelValues(node.Name).Observe(float64(myClock.Since(startTime)) / float64(time.Second))
 		lastRequestTime.WithLabelValues(node.Name).Set(float64(myClock.Now().Unix()))
 	}()
-	summary, err := c.kubeletClient.GetSummary(ctx, node)
+	ms, err := c.kubeletClient.GetMetrics(ctx, node)
 
 	if err != nil {
 		requestTotal.WithLabelValues("false").Inc()
-		return nil, fmt.Errorf("unable to fetch metrics from node %s: %v", node.Name, err)
+		return nil, err
 	}
 	requestTotal.WithLabelValues("true").Inc()
-	return decodeBatch(summary), nil
+	return ms, nil
 }
 
 type clock interface {

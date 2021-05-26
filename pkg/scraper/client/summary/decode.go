@@ -12,16 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package scraper
+package summary
 
 import (
 	"fmt"
-	"math"
-	"time"
 
 	"k8s.io/klog/v2"
 
-	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/metrics-server/pkg/storage"
 )
 
@@ -57,25 +54,25 @@ func decodeBatch(summary *Summary) *storage.MetricsBatch {
 }
 
 func decodeNodeStats(nodeStats *NodeStats, target *storage.NodeMetricsPoint) (success bool) {
-	timestamp, err := getScrapeTime(nodeStats.CPU, nodeStats.Memory)
-	if err != nil {
+	if nodeStats.StartTime.IsZero() || nodeStats.CPU == nil || nodeStats.CPU.Time.IsZero() {
 		// if we can't get a timestamp, assume bad data in general
-		klog.V(1).Infof("Skip metric for node %q, error: %v", nodeStats.NodeName, err)
+		klog.V(1).InfoS("Failed getting node metric timestamp", "node", klog.KRef("", nodeStats.NodeName))
 		return false
 	}
 	*target = storage.NodeMetricsPoint{
 		Name: nodeStats.NodeName,
 		MetricsPoint: storage.MetricsPoint{
-			Timestamp: timestamp,
+			StartTime: nodeStats.StartTime.Time,
+			Timestamp: nodeStats.CPU.Time.Time,
 		},
 	}
 	success = true
-	if err := decodeCPU(&target.CpuUsage, nodeStats.CPU); err != nil {
-		klog.V(1).Infof("Skip CPU metric for node %q, error %v", nodeStats.NodeName, err)
+	if err := decodeCPU(&target.CumulativeCpuUsed, nodeStats.CPU); err != nil {
+		klog.V(1).InfoS("Skipped node CPU metric", "node", klog.KRef("", nodeStats.NodeName), "err", err)
 		success = false
 	}
 	if err := decodeMemory(&target.MemoryUsage, nodeStats.Memory); err != nil {
-		klog.V(1).Infof("Skip Memory metric for node %q, error %v", nodeStats.NodeName, err)
+		klog.V(1).InfoS("Skipped node memory metric", "node", klog.KRef("", nodeStats.NodeName), "err", err)
 		success = false
 	}
 	return success
@@ -90,25 +87,26 @@ func decodePodStats(podStats *PodStats, target *storage.PodMetricsPoint) (succes
 		Containers: make([]storage.ContainerMetricsPoint, len(podStats.Containers)),
 	}
 	for i, container := range podStats.Containers {
-		timestamp, err := getScrapeTime(container.CPU, container.Memory)
-		if err != nil {
+		if container.StartTime.IsZero() || container.CPU == nil || container.CPU.Time.IsZero() {
 			// if we can't get a timestamp, assume bad data in general
-			klog.V(1).Infof("Skip container %q in pod %s/%s, error: %v", container.Name, target.Namespace, target.Name, err)
+			klog.V(1).InfoS("Failed getting container metric timestamp", "containerName", container.Name, "pod", klog.KRef(target.Namespace, target.Name))
 			success = false
 			continue
+
 		}
 		point := storage.ContainerMetricsPoint{
 			Name: container.Name,
 			MetricsPoint: storage.MetricsPoint{
-				Timestamp: timestamp,
+				StartTime: container.StartTime.Time,
+				Timestamp: container.CPU.Time.Time,
 			},
 		}
-		if err = decodeCPU(&point.CpuUsage, container.CPU); err != nil {
-			klog.V(1).Infof("Skip CPU metric for container %q in pod %s/%s, error: %v", container.Name, target.Namespace, target.Name, err)
+		if err := decodeCPU(&point.CumulativeCpuUsed, container.CPU); err != nil {
+			klog.V(1).InfoS("Skipped container CPU metric", "containerName", container.Name, "pod", klog.KRef(target.Namespace, target.Name), "err", err)
 			success = false
 		}
-		if err = decodeMemory(&point.MemoryUsage, container.Memory); err != nil {
-			klog.V(1).Infof("Skip Memory metric for container %q in pod %s/%s, error: %v", container.Name, target.Namespace, target.Name, err)
+		if err := decodeMemory(&point.MemoryUsage, container.Memory); err != nil {
+			klog.V(1).InfoS("Skipped container memory metric", "containerName", container.Name, "pod", klog.KRef(target.Namespace, target.Name), "err", err)
 			success = false
 		}
 
@@ -117,58 +115,26 @@ func decodePodStats(podStats *PodStats, target *storage.PodMetricsPoint) (succes
 	return success
 }
 
-func decodeCPU(target *resource.Quantity, cpuStats *CPUStats) error {
-	if cpuStats == nil || cpuStats.UsageNanoCores == nil {
-		return fmt.Errorf("missing usageNanoCores value")
+func decodeCPU(target *uint64, cpuStats *CPUStats) error {
+	if cpuStats == nil || cpuStats.UsageCoreNanoSeconds == nil {
+		return fmt.Errorf("missing usageCoreNanoSeconds value")
 	}
 
-	*target = *uint64Quantity(*cpuStats.UsageNanoCores, -9)
+	if *cpuStats.UsageCoreNanoSeconds == 0 {
+		return fmt.Errorf("Got UsageCoreNanoSeconds equal zero")
+	}
+	*target = *cpuStats.UsageCoreNanoSeconds
 	return nil
 }
 
-func decodeMemory(target *resource.Quantity, memStats *MemoryStats) error {
+func decodeMemory(target *uint64, memStats *MemoryStats) error {
 	if memStats == nil || memStats.WorkingSetBytes == nil {
 		return fmt.Errorf("missing workingSetBytes value")
 	}
+	if *memStats.WorkingSetBytes == 0 {
+		return fmt.Errorf("Got WorkingSetBytes equal zero")
+	}
 
-	*target = *uint64Quantity(*memStats.WorkingSetBytes, 0)
-	target.Format = resource.BinarySI
-
+	*target = *memStats.WorkingSetBytes
 	return nil
-}
-
-func getScrapeTime(cpu *CPUStats, memory *MemoryStats) (time.Time, error) {
-	// Ensure we get the earlier timestamp so that we can tell if a given data
-	// point was tainted by pod initialization.
-
-	var earliest *time.Time
-	if cpu != nil && !cpu.Time.IsZero() && (earliest == nil || earliest.After(cpu.Time.Time)) {
-		earliest = &cpu.Time.Time
-	}
-
-	if memory != nil && !memory.Time.IsZero() && (earliest == nil || earliest.After(memory.Time.Time)) {
-		earliest = &memory.Time.Time
-	}
-
-	if earliest == nil {
-		return time.Time{}, fmt.Errorf("no non-zero timestamp on either CPU or memory")
-	}
-
-	return *earliest, nil
-}
-
-// uint64Quantity converts a uint64 into a Quantity, which only has constructors
-// that work with int64 (except for parse, which requires costly round-trips to string).
-// We lose precision until we fit in an int64 if greater than the max int64 value.
-func uint64Quantity(val uint64, scale resource.Scale) *resource.Quantity {
-	// easy path -- we can safely fit val into an int64
-	if val <= math.MaxInt64 {
-		return resource.NewScaledQuantity(int64(val), scale)
-	}
-
-	klog.V(2).Infof("unexpectedly large resource value %v, loosing precision to fit in scaled resource.Quantity", val)
-
-	// otherwise, lose an decimal order-of-magnitude precision,
-	// so we can fit into a scaled quantity
-	return resource.NewScaledQuantity(int64(val/10), resource.Scale(1)+scale)
 }

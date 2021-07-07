@@ -7,7 +7,7 @@ Metrics Server collects resource metrics from Kubelets and exposes them in Kuber
 for use by [Horizontal Pod Autoscaler] and [Vertical Pod Autoscaler]. Metrics API can also be accessed by `kubectl top`,
 making it easier to debug autoscaling pipelines.
 
-Metrics Server is not meant for non-autoscaling purposes. For example, don't use it to forward metrics to monitoring solutions, or as a source of monitoring solution metrics.
+Metrics Server is not meant for non-autoscaling purposes. For example, don't use it to forward metrics to monitoring solutions, or as a source of monitoring solution metrics. In such cases please collect metrics from Kubelet `/metrics/resource` endpoint directly.
 
 Metrics Server offers:
 - A single deployment that works on most clusters (see [Requirements](#requirements))
@@ -65,6 +65,7 @@ Compatibility matrix:
 
 Metrics Server | Metrics API group/version | Supported Kubernetes version
 ---------------|---------------------------|-----------------------------
+0.6.x          | `metrics.k8s.io/v1beta1`  | *1.19+
 0.5.x          | `metrics.k8s.io/v1beta1`  | *1.8+
 0.4.x          | `metrics.k8s.io/v1beta1`  | *1.8+
 0.3.x          | `metrics.k8s.io/v1beta1`  | 1.8-1.21
@@ -160,23 +161,6 @@ This project is maintained by [SIG Instrumentation]
 [Slack channel]: https://kubernetes.slack.com/messages/sig-instrumentation
 [Mailing list]: https://groups.google.com/forum/#!forum/kubernetes-sig-instrumentation
 [SIG Instrumentation]: https://github.com/kubernetes/community/tree/master/sig-instrumentation
-
-### Development
-
-Recommended tools for local development:
-* [Kind](https://kind.sigs.k8s.io/)
-* [Skaffold](https://skaffold.dev/)
-
-To start local development just run:
-```
-kind create cluster
-skaffold dev
-```
-
-To execute e2e tests run:
-```
-go test test/e2e_test.go -v -count=1
-```
 
 ### Code of conduct
 
